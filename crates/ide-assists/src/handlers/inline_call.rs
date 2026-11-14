@@ -629,15 +629,16 @@ fn inline<'db>(
     let mut body = ast::BlockExpr::cast(edit.new_root().clone())
         .expect("editor root should still be a BlockExpr");
 
-    // Apply generic substitution (needs immutable tree)
-    if let Some(generic_arg_list) = generic_arg_list.clone()
-        && let Some((target, source)) = &sema.scope(node.syntax()).zip(sema.scope(fn_body.syntax()))
-        && let Some(new_body) = ast::BlockExpr::cast(
+    // Apply generic substitution and path transform
+    if let Some((target, source)) = &sema.scope(node.syntax()).zip(sema.scope(fn_body.syntax())) {
+        let transform = if let Some(generic_arg_list) = generic_arg_list.clone() {
             PathTransform::function_call(target, source, function, generic_arg_list)
-                .apply(body.syntax()),
-        )
-    {
-        body = new_body;
+        } else {
+            PathTransform::generic_transformation(target, source)
+        };
+        if let Some(new_body) = ast::BlockExpr::cast(transform.apply(body.syntax())) {
+            body = new_body
+        }
     }
     if let Some(macro_file) = file_id.macro_file() {
         cov_mark::hit!(inline_call_defined_in_macro);
@@ -1248,6 +1249,35 @@ fn bar<U, const M: usize>() {}
 
 fn main() {
     bar::<usize, {0}>();
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn transform_path() {
+        check_assist(
+            inline_call,
+            r#"
+mod foo {
+    pub const VAL: usize = 2;
+    pub fn bar() -> usize {
+        VAL
+    }
+}
+fn main() {
+    foo::bar$0();
+}
+"#,
+            r#"
+mod foo {
+    pub const VAL: usize = 2;
+    pub fn bar() -> usize {
+        VAL
+    }
+}
+fn main() {
+    foo::VAL;
 }
 "#,
         );
